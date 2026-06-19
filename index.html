@@ -5,356 +5,643 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Minetech</title>
     <style>
-        body { margin: 0; overflow: hidden; font-family: monospace; background: #87CEEB; user-select: none; }
-        #info { position: absolute; top: 10px; left: 10px; color: white; background: rgba(0,0,0,0.7); padding: 10px; border-radius: 5px; pointer-events: none; }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { overflow: hidden; background: #000; font-family: 'Courier New', monospace; }
         canvas { display: block; }
+        
+        #loading {
+            position: fixed; inset: 0; z-index: 100;
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            background: #1a1a2e; color: #e0e0e0;
+        }
+        #loading h1 {
+            font-size: 48px; font-weight: 900;
+            letter-spacing: 8px; margin-bottom: 30px;
+            color: #4ade80;
+            text-shadow: 0 0 30px rgba(74,222,128,0.3);
+        }
+        #loading .bar-bg {
+            width: 400px; height: 8px;
+            background: #2a2a4a; border-radius: 4px;
+            overflow: hidden;
+        }
+        #loading .bar-fill {
+            height: 100%; width: 0%;
+            background: linear-gradient(90deg, #4ade80, #22c55e);
+            border-radius: 4px; transition: width 0.3s;
+        }
+        #loading .status {
+            margin-top: 16px; font-size: 14px; color: #888;
+        }
+        
+        #hud {
+            position: fixed; inset: 0; z-index: 10;
+            pointer-events: none; display: none;
+        }
         #crosshair {
-            position: absolute; top: 50%; left: 50%; width: 10px; height: 10px;
-            background: white; border-radius: 50%; transform: translate(-50%, -50%);
-            pointer-events: none; mix-blend-mode: difference;
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            width: 24px; height: 24px;
+        }
+        #crosshair::before, #crosshair::after {
+            content: ''; position: absolute; background: white;
+            mix-blend-mode: difference;
+        }
+        #crosshair::before {
+            top: 50%; left: 0; right: 0; height: 2px;
+            transform: translateY(-50%);
+        }
+        #crosshair::after {
+            left: 50%; top: 0; bottom: 0; width: 2px;
+            transform: translateX(-50%);
+        }
+        #info {
+            position: absolute; top: 12px; left: 12px;
+            color: white; font-size: 13px; line-height: 1.6;
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.8);
+        }
+        #start-prompt {
+            position: absolute; bottom: 30%; left: 50%;
+            transform: translateX(-50%);
+            color: white; font-size: 18px;
+            text-shadow: 1px 1px 3px rgba(0,0,0,0.9);
+            animation: pulse 2s ease-in-out infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 0.5; }
+            50% { opacity: 1; }
         }
     </style>
 </head>
 <body>
-    <div id="info">
-        <div>FPS: <span id="fps">0</span></div>
-        <div>Blocks Loaded: <span id="chunkCount">0</span></div>
-        <div>F3: Debug | SPACE: Fly Up | SHIFT: Fly Down</div>
-        <div>Click to Play</div>
+    <div id="loading">
+        <h1>MINETECH</h1>
+        <div class="bar-bg"><div class="bar-fill" id="bar"></div></div>
+        <div class="status" id="status">Loading textures...</div>
     </div>
-    <div id="crosshair"></div>
+    <div id="hud">
+        <div id="crosshair"></div>
+        <div id="info">
+            <div id="fps">FPS: 0</div>
+            <div id="coords">XYZ: 0 / 0 / 0</div>
+            <div id="chunk-info">Chunk: 0, 0</div>
+        </div>
+        <div id="start-prompt">Click to play</div>
+    </div>
 
     <script type="importmap">
     {
-      "imports": {
-        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
-        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
-      }
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
     }
     </script>
-
     <script type="module">
-        import * as THREE from 'three';
-        import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
+    import * as THREE from 'three';
 
-        // --- 1. ASSET MANAGEMENT ---
-        const TEXTURES = {
-            grass_top: './textures/grass_top.png',
-            grass_side: './textures/grass_side.png',
-            dirt: './textures/dirt.png',
-            wood_top: './textures/oak_top.png',
-            wood_side: './textures/oak_side.png',
-            leaves: './textures/leaves.png'
-        };
+    // ========== Constants ==========
+    const CHUNK_SIZE = 16;
+    const CHUNK_HEIGHT = 80;
+    const RENDER_DIST = 6;
+    const BASE_URL = 'https://raw.githubusercontent.com/TheCoder-creator/minetech/main/textures/';
+    const TEX_SIZE = 16;
 
-        const tileSize = 16;
-        const atlasCanvas = document.createElement('canvas');
-        atlasCanvas.width = 64;
-        atlasCanvas.height = 64;
-        const ctx = atlasCanvas.getContext('2d');
-        
-        const atlasTexture = new THREE.CanvasTexture(atlasCanvas);
-        atlasTexture.magFilter = THREE.NearestFilter;
-        atlasTexture.minFilter = THREE.NearestFilter;
-        atlasTexture.colorSpace = THREE.SRGBColorSpace;
+    // Block types
+    const AIR = 0, GRASS = 1, DIRT = 2, OAK_LOG = 3, LEAVES = 4;
 
-        const tileMap = {
-            grass_top: 0, grass_side: 1, dirt: 2,
-            wood_top: 3, wood_side: 4, leaves: 5
-        };
+    // Atlas layout: 3 cols x 2 rows
+    // Row 0 (top of canvas): grass_top, grass_side, dirt
+    // Row 1 (bottom): leaves, oak_side, oak_top
+    const ATLAS_COLS = 3, ATLAS_ROWS = 2;
 
-        // --- 2. UV MAPPING FIX ---
-        // We add a tiny half-pixel inset so top-row textures don't clip out of bounds
-        function getUVs(tileIndex) {
-            const tilesPerRow = 4;
-            const step = 1 / tilesPerRow;
-            const halfPixel = (1 / 64) / 2; // 0.5px inset on a 64x64 canvas
-            
-            const x = (tileIndex % tilesPerRow) * step;
-            const y = 1 - (Math.floor(tileIndex / tilesPerRow) + 1) * step;
-            
-            return [
-                x + halfPixel, y + halfPixel,           // Top Left
-                x + step - halfPixel, y + halfPixel,    // Top Right
-                x + step - halfPixel, y + step - halfPixel, // Bottom Right
-                x + halfPixel, y + step - halfPixel     // Bottom Left
-            ];
+    // Texture index in atlas [col, row] for each block face
+    // Faces: +x, -x, +y, -y, +z, -z
+    const BLOCK_TEX = {
+        [GRASS]:   [[1,0],[1,0],[0,0],[2,0],[1,0],[1,0]],
+        [DIRT]:    [[2,0],[2,0],[2,0],[2,0],[2,0],[2,0]],
+        [OAK_LOG]: [[1,1],[1,1],[2,1],[2,1],[1,1],[1,1]],
+        [LEAVES]:  [[0,1],[0,1],[0,1],[0,1],[0,1],[0,1]],
+    };
+
+    // Face definitions: direction to check, 4 vertices (CCW from outside), 4 UVs
+    const FACES = [
+        { dir: [1,0,0],  verts: [[1,0,0],[1,1,0],[1,1,1],[1,0,1]], uvs: [[0,0],[0,1],[1,1],[1,0]] }, // +x
+        { dir: [-1,0,0], verts: [[0,0,1],[0,1,1],[0,1,0],[0,0,0]], uvs: [[0,0],[0,1],[1,1],[1,0]] }, // -x
+        { dir: [0,1,0],  verts: [[0,1,1],[1,1,1],[1,1,0],[0,1,0]], uvs: [[0,0],[1,0],[1,1],[0,1]] }, // +y
+        { dir: [0,-1,0], verts: [[0,0,0],[1,0,0],[1,0,1],[0,0,1]], uvs: [[0,0],[1,0],[1,1],[0,1]] }, // -y
+        { dir: [0,0,1],  verts: [[0,0,1],[1,0,1],[1,1,1],[0,1,1]], uvs: [[0,0],[1,0],[1,1],[0,1]] }, // +z
+        { dir: [0,0,-1], verts: [[1,0,0],[0,0,0],[0,1,0],[1,1,0]], uvs: [[0,0],[1,0],[1,1],[0,1]] }, // -z
+    ];
+
+    // ========== Noise ==========
+    function hash2(x, y) {
+        let h = (x * 374761393 + y * 668265263) | 0;
+        h = ((h ^ (h >>> 13)) * 1274126177) | 0;
+        return ((h ^ (h >>> 16)) >>> 0) / 4294967295;
+    }
+    function smoothNoise(x, y) {
+        const ix = Math.floor(x), iy = Math.floor(y);
+        const fx = x - ix, fy = y - iy;
+        const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+        const a = hash2(ix, iy), b = hash2(ix+1, iy);
+        const c = hash2(ix, iy+1), d = hash2(ix+1, iy+1);
+        return (a*(1-sx) + b*sx) * (1-sy) + (c*(1-sx) + d*sx) * sy;
+    }
+    function terrainHeight(wx, wz) {
+        let h = 0;
+        h += smoothNoise(wx * 0.008, wz * 0.008) * 24;
+        h += smoothNoise(wx * 0.025, wz * 0.025) * 10;
+        h += smoothNoise(wx * 0.08, wz * 0.08) * 3;
+        return Math.floor(h + 28);
+    }
+    function treeSeed(wx, wz) {
+        return hash2(wx * 13 + 37, wz * 17 + 53);
+    }
+    function shouldPlaceTree(wx, wz) {
+        return treeSeed(wx, wz) < 0.015;
+    }
+    function treeHeight(wx, wz) {
+        return 4 + Math.floor(treeSeed(wx, wz) * 1000) % 3;
+    }
+
+    // ========== Texture Atlas ==========
+    const texNames = ['grass_top','grass_side','dirt','leaves','oak_side','oak_top'];
+    const texUrls = texNames.map(n => BASE_URL + n + '.png');
+
+    function createAtlas(images) {
+        const w = ATLAS_COLS * TEX_SIZE, h = ATLAS_ROWS * TEX_SIZE;
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        images.forEach((img, i) => {
+            const col = i % ATLAS_COLS, row = Math.floor(i / ATLAS_COLS);
+            ctx.drawImage(img, col * TEX_SIZE, row * TEX_SIZE, TEX_SIZE, TEX_SIZE);
+        });
+        const tex = new THREE.CanvasTexture(canvas);
+        tex.magFilter = THREE.NearestFilter;
+        tex.minFilter = THREE.NearestFilter;
+        tex.colorSpace = THREE.SRGBColorSpace;
+        return tex;
+    }
+
+    function createFallbackTexture(color) {
+        const c = document.createElement('canvas');
+        c.width = TEX_SIZE; c.height = TEX_SIZE;
+        const ctx = c.getContext('2d');
+        ctx.fillStyle = color;
+        ctx.fillRect(0, 0, TEX_SIZE, TEX_SIZE);
+        // Add some noise for texture
+        for (let i = 0; i < 40; i++) {
+            const x = Math.random() * TEX_SIZE, y = Math.random() * TEX_SIZE;
+            ctx.fillStyle = `rgba(0,0,0,${Math.random()*0.3})`;
+            ctx.fillRect(x, y, 1, 1);
+        }
+        return c;
+    }
+
+    async function loadTextures(onProgress) {
+        const fallbacks = [
+            createFallbackTexture('#4a8c2a'),  // grass_top - green
+            createFallbackTexture('#6b8c42'),  // grass_side - greenish brown
+            createFallbackTexture('#8b6b3a'),  // dirt - brown
+            createFallbackTexture('#2d6b1e'),  // leaves - dark green
+            createFallbackTexture('#6b5030'),  // oak_side - medium brown
+            createFallbackTexture('#a08060'),  // oak_top - light brown rings
+        ];
+        const images = [];
+        for (let i = 0; i < texUrls.length; i++) {
+            try {
+                const img = await loadImage(texUrls[i]);
+                images.push(img);
+                onProgress((i + 1) / texUrls.length, `Loaded ${texNames[i]}.png`);
+            } catch (e) {
+                console.warn(`Failed to load ${texNames[i]}, using fallback`);
+                images.push(fallbacks[i]);
+                onProgress((i + 1) / texUrls.length, `Fallback for ${texNames[i]}.png`);
+            }
+        }
+        return images;
+    }
+
+    function loadImage(url) {
+        return new Promise((resolve, reject) => {
+            const img = new Image();
+            img.crossOrigin = 'anonymous';
+            img.onload = () => resolve(img);
+            img.onerror = reject;
+            img.src = url;
+        });
+    }
+
+    // ========== Chunk Generation ==========
+    const chunks = new Map();
+
+    function chunkKey(cx, cz) { return `${cx},${cz}`; }
+
+    function generateChunkData(cx, cz) {
+        // 16x16xCHUNK_HEIGHT block array
+        const data = new Uint8Array(CHUNK_SIZE * CHUNK_HEIGHT * CHUNK_SIZE);
+        const ox = cx * CHUNK_SIZE, oz = cz * CHUNK_SIZE;
+
+        // Terrain pass
+        for (let x = 0; x < CHUNK_SIZE; x++) {
+            for (let z = 0; z < CHUNK_SIZE; z++) {
+                const wx = ox + x, wz = oz + z;
+                const h = terrainHeight(wx, wz);
+                for (let y = 0; y < CHUNK_HEIGHT && y <= h; y++) {
+                    const idx = x * CHUNK_HEIGHT * CHUNK_SIZE + y * CHUNK_SIZE + z;
+                    if (y === h) data[idx] = GRASS;
+                    else if (y >= h - 3) data[idx] = DIRT;
+                    else data[idx] = DIRT; // all underground is dirt
+                }
+            }
         }
 
-        function hash(x, y) {
-            const seed = 1337;
-            let h = x * 374761393 + y * 668265263 + seed * 982451653;
-            h = (h ^ (h >> 13)) * 1274126177;
-            return ((h ^ (h >> 16)) >>> 0) / 4294967295;
-        }
+        // Tree pass - check wider area for trees whose leaves may extend in
+        const treeMargin = 3;
+        for (let tx = ox - treeMargin; tx < ox + CHUNK_SIZE + treeMargin; tx++) {
+            for (let tz = oz - treeMargin; tz < oz + CHUNK_SIZE + treeMargin; tz++) {
+                if (!shouldPlaceTree(tx, tz)) continue;
+                const th = treeHeight(tx, tz);
+                const baseH = terrainHeight(tx, tz);
+                if (baseH < 5 || baseH + th + 2 >= CHUNK_HEIGHT) continue;
 
-        function smoothNoise(x, y) {
-            const ix = Math.floor(x), iy = Math.floor(y);
-            const fx = x - ix, fy = y - iy;
-            const a = hash(ix, iy), b = hash(ix + 1, iy);
-            const c = hash(ix, iy + 1), d = hash(ix + 1, iy + 1);
-            const ux = fx * fx * (3 - 2 * fx), uy = fy * fy * (3 - 2 * fy);
-            return a * (1 - ux) * (1 - uy) + b * ux * (1 - uy) + c * (1 - ux) * uy + d * ux * uy;
-        }
-
-        // --- 3. CONFIG ---
-        const CHUNK_SIZE = 16;
-        const WORLD_HEIGHT = 32;
-        const RENDER_DISTANCE = 4;
-        const material = new THREE.MeshLambertMaterial({ map: atlasTexture });
-
-        let scene, camera, renderer, controls;
-        let chunks = {};
-        let chunkData = {}; 
-        const keys = { w: false, a: false, s: false, d: false, ' ': false, shift: false };
-
-        // --- 4. INIT ---
-        async function init() {
-            const loadPromises = Object.entries(TEXTURES).map(([name, url]) => {
-                return new Promise((resolve) => {
-                    const img = new Image();
-                    img.crossOrigin = "Anonymous"; 
-                    img.onload = () => {
-                        const idx = tileMap[name];
-                        const x = (idx % 4) * tileSize;
-                        const y = Math.floor(idx / 4) * tileSize;
-                        ctx.drawImage(img, x, y, tileSize, tileSize);
-                        resolve();
-                    };
-                    img.onerror = () => { 
-                        console.error(`CRITICAL: Failed to load ${url}. Check your folder structure!`); 
-                        resolve(); 
-                    };
-                    img.src = url;
-                });
-            });
-            await Promise.all(loadPromises);
-            atlasTexture.needsUpdate = true;
-
-            scene = new THREE.Scene();
-            scene.background = new THREE.Color(0x87CEEB);
-            scene.fog = new THREE.Fog(0x87CEEB, 10, RENDER_DISTANCE * CHUNK_SIZE);
-
-            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-            camera.position.set(0, 20, 0);
-
-            renderer = new THREE.WebGLRenderer({ antialias: false });
-            renderer.setSize(window.innerWidth, window.innerHeight);
-            renderer.setPixelRatio(window.devicePixelRatio);
-            document.body.appendChild(renderer.domElement);
-
-            scene.add(new THREE.AmbientLight(0xffffff, 0.6));
-            const sun = new THREE.DirectionalLight(0xffffff, 0.8);
-            sun.position.set(50, 100, 50);
-            scene.add(sun);
-
-            controls = new PointerLockControls(camera, document.body);
-            document.body.addEventListener('click', () => controls.lock());
-
-            document.addEventListener('keydown', (e) => keys[e.key.toLowerCase()] = true);
-            document.addEventListener('keyup', (e) => keys[e.key.toLowerCase()] = false);
-            window.addEventListener('resize', () => {
-                camera.aspect = window.innerWidth / window.innerHeight;
-                camera.updateProjectionMatrix();
-                renderer.setSize(window.innerWidth, window.innerHeight);
-            });
-
-            animate();
-        }
-
-        // --- 5. CHUNK DATA & TREES ---
-        const BLOCK_IDS = { 'dirt': 1, 'grass': 2, 'wood': 3, 'leaves': 4 };
-
-        function getChunkData(cx, cz) {
-            const key = `${cx},${cz}`;
-            if (chunkData[key]) return chunkData[key];
-
-            const data = new Uint8Array(CHUNK_SIZE * CHUNK_SIZE * WORLD_HEIGHT).fill(0);
-            
-            for (let x = 0; x < CHUNK_SIZE; x++) {
-                for (let z = 0; z < CHUNK_SIZE; z++) {
-                    const worldX = cx * CHUNK_SIZE + x;
-                    const worldZ = cz * CHUNK_SIZE + z;
-                    const height = Math.floor(smoothNoise(worldX * 0.05, worldZ * 0.05) * 8) + 8;
-
-                    for (let y = 0; y < WORLD_HEIGHT; y++) {
-                        let type = 0;
-                        if (y < height - 2) type = BLOCK_IDS['dirt'];
-                        else if (y < height) type = BLOCK_IDS['grass'];
-                        if (type > 0) data[x + z * CHUNK_SIZE + y * CHUNK_SIZE * CHUNK_SIZE] = type;
+                // Trunk
+                for (let dy = 1; dy <= th; dy++) {
+                    const bx = tx - ox, bz = tz - oz, by = baseH + dy;
+                    if (bx >= 0 && bx < CHUNK_SIZE && bz >= 0 && bz < CHUNK_SIZE && by < CHUNK_HEIGHT) {
+                        const idx = bx * CHUNK_HEIGHT * CHUNK_SIZE + by * CHUNK_SIZE + bz;
+                        data[idx] = OAK_LOG;
                     }
+                }
 
-                    if (height < WORLD_HEIGHT - 6) {
-                        const topBlockIdx = x + z * CHUNK_SIZE + (height - 1) * CHUNK_SIZE * CHUNK_SIZE;
-                        if (data[topBlockIdx] === BLOCK_IDS['grass']) {
-                            if (hash(worldX, worldZ) > 0.95) {
-                                const treeBase = height;
-                                for(let th=0; th<5; th++) setBlock(data, x, treeBase + th, z, BLOCK_IDS['wood']);
-                                
-                                const leafCenter = treeBase + 4;
-                                for (let ly = -2; ly <= 1; ly++) {
-                                    for (let lx = -1; lx <= 1; lx++) {
-                                        for (let lz = -1; lz <= 1; lz++) {
-                                            if (lx===0 && lz===0 && ly >= -1) continue; 
-                                            if (x+lx >=0 && x+lx < CHUNK_SIZE && z+lz >=0 && z+lz < CHUNK_SIZE) {
-                                                 setBlock(data, x+lx, leafCenter+ly, z+lz, BLOCK_IDS['leaves']);
-                                            }
-                                        }
-                                    }
-                                }
+                // Leaves - sphere-ish around top of trunk
+                const leafBase = baseH + th - 1;
+                for (let lx = -2; lx <= 2; lx++) {
+                    for (let lz = -2; lz <= 2; lz++) {
+                        for (let ly = 0; ly <= 3; ly++) {
+                            const dist = Math.abs(lx) + Math.abs(lz) + ly;
+                            if (dist > 4) continue;
+                            if (lx === 0 && lz === 0 && ly < 2) continue; // trunk space
+                            const bx = tx + lx - ox, bz = tz + lz - oz, by = leafBase + ly;
+                            if (bx >= 0 && bx < CHUNK_SIZE && bz >= 0 && bz < CHUNK_SIZE && by < CHUNK_HEIGHT) {
+                                const idx = bx * CHUNK_HEIGHT * CHUNK_SIZE + by * CHUNK_SIZE + bz;
+                                if (data[idx] === AIR) data[idx] = LEAVES;
                             }
                         }
                     }
                 }
             }
-            chunkData[key] = data;
-            return data;
         }
 
-        function getBlock(data, x, y, z) {
-            if (x < 0 || x >= CHUNK_SIZE || z < 0 || z >= CHUNK_SIZE || y < 0 || y >= WORLD_HEIGHT) return 0;
-            return data[x + z * CHUNK_SIZE + y * CHUNK_SIZE * CHUNK_SIZE];
-        }
-        function setBlock(data, x, y, z, id) {
-            if (x >= 0 && x < CHUNK_SIZE && z >= 0 && z < CHUNK_SIZE && y >= 0 && y < WORLD_HEIGHT) {
-                data[x + z * CHUNK_SIZE + y * CHUNK_SIZE * CHUNK_SIZE] = id;
-            }
-        }
+        return data;
+    }
 
-        function getWorldBlock(wx, wy, wz) {
-            if (wy < 0 || wy >= WORLD_HEIGHT) return 0;
-            const cx = Math.floor(wx / CHUNK_SIZE);
-            const cz = Math.floor(wz / CHUNK_SIZE);
-            let lx = Math.floor(wx % CHUNK_SIZE);
-            let lz = Math.floor(wz % CHUNK_SIZE);
-            if (lx < 0) lx += CHUNK_SIZE;
-            if (lz < 0) lz += CHUNK_SIZE;
-            const chunk = getChunkData(cx, cz);
-            return getBlock(chunk, lx, wy, lz);
-        }
+    function getBlock(data, lx, ly, lz) {
+        if (lx < 0 || lx >= CHUNK_SIZE || ly < 0 || ly >= CHUNK_HEIGHT || lz < 0 || lz >= CHUNK_SIZE) return -1;
+        return data[lx * CHUNK_HEIGHT * CHUNK_SIZE + ly * CHUNK_SIZE + lz];
+    }
 
-        // --- 6. MESH BUILDING ---
-        function buildChunkMesh(cx, cz) {
-            const data = getChunkData(cx, cz);
-            const geometry = new THREE.BufferGeometry();
-            const positions = [], uvCoords = [], indices = [];
-            let vertexIndex = 0;
+    function buildChunkMesh(data, cx, cz, material) {
+        const positions = [];
+        const normals = [];
+        const uvs = [];
+        const indices = [];
+        let vertCount = 0;
+        const ox = cx * CHUNK_SIZE, oz = cz * CHUNK_SIZE;
 
-            const addFace = (x, y, z, face, tileIndex) => {
-                const s = 0.5;
-                const faces = {
-                    top: [[-s, s, -s], [s, s, -s], [s, s, s], [-s, s, s]],
-                    bottom: [[-s, -s, s], [s, -s, s], [s, -s, -s], [-s, -s, -s]],
-                    front: [[-s, -s, s], [s, -s, s], [s, s, s], [-s, s, s]],
-                    back: [[s, -s, -s], [-s, -s, -s], [-s, s, -s], [s, s, -s]],
-                    left: [[-s, -s, -s], [-s, -s, s], [-s, s, s], [-s, s, -s]],
-                    right: [[s, -s, s], [s, -s, -s], [s, s, -s], [s, s, s]]
-                };
-                const corners = faces[face];
-                for(let i=0; i<4; i++) positions.push(x + corners[i][0], y + corners[i][1], z + corners[i][2]);
-                uvCoords.push(...getUVs(tileIndex));
-                indices.push(vertexIndex, vertexIndex + 1, vertexIndex + 2, vertexIndex, vertexIndex + 2, vertexIndex + 3);
-                vertexIndex += 4;
-            };
-
-            const getTileForBlock = (id, face) => {
-                if (id === BLOCK_IDS['grass']) {
-                    if (face === 'top') return tileMap['grass_top'];
-                    if (face === 'bottom') return tileMap['dirt'];
-                    return tileMap['grass_side'];
-                }
-                if (id === BLOCK_IDS['wood']) {
-                    if (face === 'top' || face === 'bottom') return tileMap['wood_top'];
-                    return tileMap['wood_side'];
-                }
-                if (id === BLOCK_IDS['leaves']) return tileMap['leaves'];
-                if (id === BLOCK_IDS['dirt']) return tileMap['dirt'];
-                return tileMap['dirt'];
-            };
-
-            for (let y = 0; y < WORLD_HEIGHT; y++) {
+        for (let x = 0; x < CHUNK_SIZE; x++) {
+            for (let y = 0; y < CHUNK_HEIGHT; y++) {
                 for (let z = 0; z < CHUNK_SIZE; z++) {
-                    for (let x = 0; x < CHUNK_SIZE; x++) {
-                        const id = getBlock(data, x, y, z);
-                        if (id === 0) continue;
+                    const block = getBlock(data, x, y, z);
+                    if (block === AIR) continue;
 
-                        const worldX = cx * CHUNK_SIZE + x;
-                        const worldZ = cz * CHUNK_SIZE + z;
-                        const nx = (dx, dy, dz) => getWorldBlock(worldX + dx, y + dy, worldZ + dz) === 0;
+                    const texInfo = BLOCK_TEX[block];
+                    if (!texInfo) continue;
 
-                        if (nx(0, 1, 0)) addFace(worldX, y, worldZ, 'top', getTileForBlock(id, 'top'));
-                        if (nx(0, -1, 0)) addFace(worldX, y, worldZ, 'bottom', getTileForBlock(id, 'bottom'));
-                        if (nx(1, 0, 0)) addFace(worldX, y, worldZ, 'right', getTileForBlock(id, 'side'));
-                        if (nx(-1, 0, 0)) addFace(worldX, y, worldZ, 'left', getTileForBlock(id, 'side'));
-                        if (nx(0, 0, 1)) addFace(worldX, y, worldZ, 'front', getTileForBlock(id, 'side'));
-                        if (nx(0, 0, -1)) addFace(worldX, y, worldZ, 'back', getTileForBlock(id, 'side'));
+                    for (let f = 0; f < 6; f++) {
+                        const face = FACES[f];
+                        const nx = x + face.dir[0], ny = y + face.dir[1], nz = z + face.dir[2];
+                        const neighbor = getBlock(data, nx, ny, nz);
+
+                        // Show face if neighbor is air or out of bounds (and not leaves adjacent to leaves)
+                        let show = false;
+                        if (neighbor === -1) show = true; // out of chunk bounds
+                        else if (neighbor === AIR) show = true;
+                        // For leaves, don't cull between leaves
+                        else if (block === LEAVES && neighbor === LEAVES) show = false;
+                        else show = false;
+
+                        if (!show) continue;
+
+                        // Get atlas UV for this face
+                        const [tc, tr] = texInfo[f];
+                        const u0 = tc / ATLAS_COLS, u1 = (tc + 1) / ATLAS_COLS;
+                        const v0 = 1 - (tr + 1) / ATLAS_ROWS, v1 = 1 - tr / ATLAS_ROWS;
+
+                        for (let v = 0; v < 4; v++) {
+                            const vert = face.verts[v];
+                            positions.push(x + vert[0] + ox, y + vert[1], z + vert[2] + oz);
+                            normals.push(face.dir[0], face.dir[1], face.dir[2]);
+                            const fuv = face.uvs[v];
+                            uvs.push(u0 + fuv[0] * (u1 - u0), v0 + fuv[1] * (v1 - v0));
+                        }
+                        indices.push(vertCount, vertCount+1, vertCount+2, vertCount, vertCount+2, vertCount+3);
+                        vertCount += 4;
                     }
                 }
             }
-
-            geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-            geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvCoords, 2));
-            geometry.setIndex(indices);
-            geometry.computeVertexNormals();
-
-            return new THREE.Mesh(geometry, material);
         }
 
-        function updateChunks() {
-            const camChunkX = Math.floor(camera.position.x / CHUNK_SIZE);
-            const camChunkZ = Math.floor(camera.position.z / CHUNK_SIZE);
+        if (vertCount === 0) return null;
 
-            for (let x = -RENDER_DISTANCE; x <= RENDER_DISTANCE; x++) {
-                for (let z = -RENDER_DISTANCE; z <= RENDER_DISTANCE; z++) {
-                    const cx = camChunkX + x;
-                    const cz = camChunkZ + z;
-                    const key = `${cx},${cz}`;
-                    if (!chunks[key]) {
-                        getChunkData(cx, cz);
-                        const mesh = buildChunkMesh(cx, cz);
-                        scene.add(mesh);
-                        chunks[key] = mesh;
+        const geom = new THREE.BufferGeometry();
+        geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+        geom.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+        geom.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+        geom.setIndex(indices);
+        return new THREE.Mesh(geom, material);
+    }
+
+    // ========== World Block Access (for collision) ==========
+    function getWorldBlock(wx, wy, wz) {
+        if (wy < 0 || wy >= CHUNK_HEIGHT) return AIR;
+        const cx = Math.floor(wx / CHUNK_SIZE);
+        const cz = Math.floor(wz / CHUNK_SIZE);
+        const key = chunkKey(cx, cz);
+        const chunk = chunks.get(key);
+        if (!chunk || !chunk.data) return AIR;
+        const lx = ((wx % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+        const lz = ((wz % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+        return chunk.data[lx * CHUNK_HEIGHT * CHUNK_SIZE + wy * CHUNK_SIZE + lz];
+    }
+
+    // ========== Setup Three.js ==========
+    const renderer = new THREE.WebGLRenderer({ antialias: false });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setClearColor(0x87CEEB);
+    document.body.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.Fog(0x87CEEB, 60, RENDER_DIST * CHUNK_SIZE - 16);
+
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, RENDER_DIST * CHUNK_SIZE + 32);
+
+    // Lighting
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+    scene.add(ambientLight);
+    const dirLight = new THREE.DirectionalLight(0xfff5e0, 0.8);
+    dirLight.position.set(100, 200, 50);
+    scene.add(dirLight);
+
+    // ========== Player ==========
+    const player = {
+        x: 50000, y: 60, z: 50000, // start near center of 100k world
+        vx: 0, vy: 0, vz: 0,
+        yaw: 0, pitch: 0,
+        onGround: false,
+        width: 0.6, height: 1.7, eyeHeight: 1.6,
+    };
+
+    // Find spawn height
+    function findSpawnHeight() {
+        const h = terrainHeight(Math.floor(player.x), Math.floor(player.z));
+        player.y = h + 2;
+    }
+
+    const keys = {};
+    const SPEED = 5.5;
+    const GRAVITY = -25;
+    const JUMP_VEL = 8.5;
+    const MOUSE_SENS = 0.002;
+
+    // ========== Pointer Lock ==========
+    let locked = false;
+    const hud = document.getElementById('hud');
+    const startPrompt = document.getElementById('start-prompt');
+
+    document.addEventListener('click', () => {
+        if (!locked) renderer.domElement.requestPointerLock();
+    });
+    document.addEventListener('pointerlockchange', () => {
+        locked = document.pointerLockElement === renderer.domElement;
+        startPrompt.style.display = locked ? 'none' : 'block';
+    });
+    document.addEventListener('mousemove', (e) => {
+        if (!locked) return;
+        player.yaw -= e.movementX * MOUSE_SENS;
+        player.pitch -= e.movementY * MOUSE_SENS;
+        player.pitch = Math.max(-Math.PI/2 + 0.01, Math.min(Math.PI/2 - 0.01, player.pitch));
+    });
+    document.addEventListener('keydown', (e) => { keys[e.code] = true; });
+    document.addEventListener('keyup', (e) => { keys[e.code] = false; });
+
+    // ========== Collision ==========
+    function collidesAt(px, py, pz) {
+        const hw = player.width / 2;
+        const minX = Math.floor(px - hw), maxX = Math.floor(px + hw);
+        const minY = Math.floor(py), maxY = Math.floor(py + player.height);
+        const minZ = Math.floor(pz - hw), maxZ = Math.floor(pz + hw);
+        for (let bx = minX; bx <= maxX; bx++) {
+            for (let by = minY; by <= maxY; by++) {
+                for (let bz = minZ; bz <= maxZ; bz++) {
+                    if (getWorldBlock(bx, by, bz) !== AIR) {
+                        // AABB overlap check
+                        if (px + hw > bx && px - hw < bx + 1 &&
+                            py + player.height > by && py < by + 1 &&
+                            pz + hw > bz && pz - hw < bz + 1) {
+                            return true;
+                        }
                     }
                 }
             }
+        }
+        return false;
+    }
 
-            for (const key in chunks) {
-                const [cx, cz] = key.split(',').map(Number);
-                if (Math.abs(cx - camChunkX) > RENDER_DISTANCE + 1 || Math.abs(cz - camChunkZ) > RENDER_DISTANCE + 1) {
-                    scene.remove(chunks[key]);
-                    chunks[key].geometry.dispose();
-                    delete chunks[key];
-                }
-            }
-            document.getElementById('chunkCount').innerText = Object.keys(chunks).length;
+    function updatePlayer(dt) {
+        if (!locked) return;
+        dt = Math.min(dt, 0.05); // cap dt
+
+        // Movement input
+        let moveX = 0, moveZ = 0;
+        const sin = Math.sin(player.yaw), cos = Math.cos(player.yaw);
+        if (keys['KeyW']) { moveX -= sin; moveZ -= cos; }
+        if (keys['KeyS']) { moveX += sin; moveZ += cos; }
+        if (keys['KeyA']) { moveX -= cos; moveZ += sin; }
+        if (keys['KeyD']) { moveX += cos; moveZ -= sin; }
+
+        const len = Math.sqrt(moveX * moveX + moveZ * moveZ);
+        if (len > 0) { moveX /= len; moveZ /= len; }
+
+        player.vx = moveX * SPEED;
+        player.vz = moveZ * SPEED;
+
+        // Jump
+        if (keys['Space'] && player.onGround) {
+            player.vy = JUMP_VEL;
+            player.onGround = false;
         }
 
-        // --- 7. FLY MODE LOOP ---
-        let lastFrameTime = performance.now();
+        // Gravity
+        player.vy += GRAVITY * dt;
 
-        function animate() {
-            requestAnimationFrame(animate);
-            const time = performance.now();
-            const delta = (time - lastFrameTime) / 1000;
-            lastFrameTime = time;
+        // Move X
+        const nx = player.x + player.vx * dt;
+        if (!collidesAt(nx, player.y, player.z)) player.x = nx;
+        else player.vx = 0;
 
-            if (Math.random() > 0.95) document.getElementById('fps').innerText = Math.round(1 / delta);
+        // Move Z
+        const nz = player.z + player.vz * dt;
+        if (!collidesAt(player.x, player.y, nz)) player.z = nz;
+        else player.vz = 0;
 
-            if (controls.isLocked) {
-                const speed = 10;
-                if (keys.w) controls.moveForward(speed * delta);
-                if (keys.s) controls.moveForward(-speed * delta);
-                if (keys.a) controls.moveRight(-speed * delta);
-                if (keys.d) controls.moveRight(speed * delta);
-                if (keys[' ']) camera.position.y += speed * delta;
-                if (keys.shift) camera.position.y -= speed * delta;
+        // Move Y
+        const ny = player.y + player.vy * dt;
+        if (!collidesAt(player.x, ny, player.z)) {
+            player.y = ny;
+            player.onGround = false;
+        } else {
+            if (player.vy < 0) player.onGround = true;
+            player.vy = 0;
+        }
+
+        // Prevent falling below world
+        if (player.y < -10) {
+            findSpawnHeight();
+            player.vy = 0;
+        }
+
+        // Update camera
+        camera.position.set(player.x, player.y + player.eyeHeight, player.z);
+        const lookX = player.x + Math.sin(player.yaw) * Math.cos(player.pitch);
+        const lookY = player.y + player.eyeHeight + Math.sin(player.pitch);
+        const lookZ = player.z + Math.cos(player.yaw) * Math.cos(player.pitch);
+        camera.lookAt(lookX, lookY, lookZ);
+    }
+
+    // ========== Chunk Management ==========
+    let atlasMaterial = null;
+
+    function updateChunks() {
+        const pcx = Math.floor(player.x / CHUNK_SIZE);
+        const pcz = Math.floor(player.z / CHUNK_SIZE);
+        const needed = new Set();
+
+        // Determine needed chunks
+        for (let dx = -RENDER_DIST; dx <= RENDER_DIST; dx++) {
+            for (let dz = -RENDER_DIST; dz <= RENDER_DIST; dz++) {
+                if (dx*dx + dz*dz > RENDER_DIST * RENDER_DIST) continue;
+                const cx = pcx + dx, cz = pcz + dz;
+                const key = chunkKey(cx, cz);
+                needed.add(key);
+                if (!chunks.has(key)) {
+                    // Generate new chunk
+                    const data = generateChunkData(cx, cz);
+                    const mesh = buildChunkMesh(data, cx, cz, atlasMaterial);
+                    const obj = { data, mesh };
+                    chunks.set(key, obj);
+                    if (mesh) scene.add(mesh);
+                }
+            }
+        }
+
+        // Remove far chunks
+        for (const [key, chunk] of chunks) {
+            if (!needed.has(key)) {
+                if (chunk.mesh) {
+                    scene.remove(chunk.mesh);
+                    chunk.mesh.geometry.dispose();
+                }
+                chunks.delete(key);
+            }
+        }
+    }
+
+    // ========== HUD ==========
+    const fpsEl = document.getElementById('fps');
+    const coordsEl = document.getElementById('coords');
+    const chunkInfoEl = document.getElementById('chunk-info');
+    let frameCount = 0, lastFpsTime = 0, fps = 0;
+
+    function updateHUD(time) {
+        frameCount++;
+        if (time - lastFpsTime >= 1000) {
+            fps = frameCount;
+            frameCount = 0;
+            lastFpsTime = time;
+            fpsEl.textContent = `FPS: ${fps}`;
+        }
+        coordsEl.textContent = `XYZ: ${player.x.toFixed(1)} / ${player.y.toFixed(1)} / ${player.z.toFixed(1)}`;
+        const cx = Math.floor(player.x / CHUNK_SIZE);
+        const cz = Math.floor(player.z / CHUNK_SIZE);
+        chunkInfoEl.textContent = `Chunk: ${cx}, ${cz}`;
+    }
+
+    // ========== Window Resize ==========
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // ========== Main ==========
+    async function init() {
+        const bar = document.getElementById('bar');
+        const status = document.getElementById('status');
+
+        // Load textures
+        const images = await loadTextures((p, msg) => {
+            bar.style.width = (p * 100) + '%';
+            status.textContent = msg;
+        });
+
+        status.textContent = 'Building texture atlas...';
+        bar.style.width = '80%';
+        const atlas = createAtlas(images);
+        atlasMaterial = new THREE.MeshLambertMaterial({ map: atlas, side: THREE.FrontSide });
+
+        status.textContent = 'Finding spawn point...';
+        bar.style.width = '90%';
+        findSpawnHeight();
+
+        // Generate initial chunks
+        status.textContent = 'Generating world...';
+        bar.style.width = '95%';
+        updateChunks();
+
+        // Hide loading, show HUD
+        document.getElementById('loading').style.display = 'none';
+        hud.style.display = 'block';
+
+        // Game loop
+        let lastTime = performance.now();
+        let chunkTimer = 0;
+
+        function loop(time) {
+            requestAnimationFrame(loop);
+            const dt = (time - lastTime) / 1000;
+            lastTime = time;
+
+            updatePlayer(dt);
+
+            // Update chunks periodically
+            chunkTimer += dt;
+            if (chunkTimer > 0.5) {
+                chunkTimer = 0;
+                updateChunks();
             }
 
-            updateChunks();
+            updateHUD(time);
             renderer.render(scene, camera);
         }
+        requestAnimationFrame(loop);
+    }
 
-        init();
+    init();
     </script>
 </body>
 </html>
