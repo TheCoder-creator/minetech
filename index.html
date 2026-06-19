@@ -1,10 +1,9 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Voxel Knockoff - Local Textures</title>
+    <title>Minetech</title>
     <style>
         body { margin: 0; overflow: hidden; font-family: monospace; background: #87CEEB; user-select: none; }
         #info { position: absolute; top: 10px; left: 10px; color: white; background: rgba(0,0,0,0.7); padding: 10px; border-radius: 5px; pointer-events: none; }
@@ -20,7 +19,7 @@
     <div id="info">
         <div>FPS: <span id="fps">0</span></div>
         <div>Blocks Loaded: <span id="chunkCount">0</span></div>
-        <div>WASD: Move | SPACE: Fly Up | SHIFT: Fly Down</div>
+        <div>F3: Debug | SPACE: Fly Up | SHIFT: Fly Down</div>
         <div>Click to Play</div>
     </div>
     <div id="crosshair"></div>
@@ -39,7 +38,6 @@
         import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 
         // --- 1. ASSET MANAGEMENT ---
-        // Using "./" pulls files from the exact same folder/directory as this HTML file
         const TEXTURES = {
             grass_top: './textures/grass_top.png',
             grass_side: './textures/grass_side.png',
@@ -65,13 +63,22 @@
             wood_top: 3, wood_side: 4, leaves: 5
         };
 
-        // --- 2. UV MAPPING ---
+        // --- 2. UV MAPPING FIX ---
+        // We add a tiny half-pixel inset so top-row textures don't clip out of bounds
         function getUVs(tileIndex) {
             const tilesPerRow = 4;
             const step = 1 / tilesPerRow;
+            const halfPixel = (1 / 64) / 2; // 0.5px inset on a 64x64 canvas
+            
             const x = (tileIndex % tilesPerRow) * step;
             const y = 1 - (Math.floor(tileIndex / tilesPerRow) + 1) * step;
-            return [ x, y, x + step, y, x + step, y + step, x, y + step ];
+            
+            return [
+                x + halfPixel, y + halfPixel,           // Top Left
+                x + step - halfPixel, y + halfPixel,    // Top Right
+                x + step - halfPixel, y + step - halfPixel, // Bottom Right
+                x + halfPixel, y + step - halfPixel     // Bottom Left
+            ];
         }
 
         function hash(x, y) {
@@ -106,8 +113,6 @@
             const loadPromises = Object.entries(TEXTURES).map(([name, url]) => {
                 return new Promise((resolve) => {
                     const img = new Image();
-                    // crossOrigin is still fine here, but technically not strictly 
-                    // necessary when loading from the same GitHub Pages domain.
                     img.crossOrigin = "Anonymous"; 
                     img.onload = () => {
                         const idx = tileMap[name];
@@ -117,7 +122,7 @@
                         resolve();
                     };
                     img.onerror = () => { 
-                        console.warn(`Failed to load: ${url} (Check your folder structure!)`); 
+                        console.error(`CRITICAL: Failed to load ${url}. Check your folder structure!`); 
                         resolve(); 
                     };
                     img.src = url;
